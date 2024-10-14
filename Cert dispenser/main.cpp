@@ -20,7 +20,7 @@ int listenForIncomming() {
     if (iResult != 0) {
         return 1;
     }
-
+    std::cout << "Binding on port" << std::endl;
     // Create listening socket for chat
     serversocket = new CWizSyncSocket(PRIMARY_PORT, SOCK_STREAM);
     if (WSAGetLastError() != 0) {
@@ -37,7 +37,7 @@ int listenForIncomming() {
         if (sock == INVALID_SOCKET) {
             continue;
         }
-
+        
         CWizReadWriteSocket* socket = new CWizReadWriteSocket(true);
 
         if (WSAGetLastError() != 0) {
@@ -54,5 +54,6 @@ int listenForIncomming() {
 }
 
 int main() {
+    listenForIncomming();
 	return 0;
 }

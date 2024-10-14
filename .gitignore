@@ -1,3 +1,4 @@
 *.log
 /x64
 /.vs
+/Cert dispenser/x64
