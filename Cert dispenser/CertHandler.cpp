@@ -1,16 +1,18 @@
 #include "CertHandler.h"
 #include <iostream>
-
 #include "cstring"
+#include "openssl/evp.h"
+#include "openssl/rsa.h"
+#include <openssl/err.h>
 CertHandler::CertHandler(CWizReadWriteSocket* socket)
 {
 	//If we don't find the CA files, we create them
-	/*if (openPKCS12(cafilesName) != 0) {
+	if (openPKCS12(cafilesName) != 0) {
 		std::cout << "No CA files found. Generating new..." << std::endl;
-		createKey(CAKey);
-		createCert(CAKey, CACert);
+		CAKey = createKey();
+		CACert = createCert(true);
 		writeToPKCS12(CAKey, CACert);
-	}*/
+	}
 	h_socket = socket;
 }
 
@@ -90,14 +92,19 @@ int CertHandler::writeToPKCS12(EVP_PKEY* privateKey, X509* certificate, const ch
 	return 0;
 }
 
-int CertHandler::createCert(EVP_PKEY* pkey, X509* cert)
+X509* CertHandler::createCert(bool isCA)
 {
 	X509* x509;
 	x509 = X509_new();
 	ASN1_INTEGER_set(X509_get_serialNumber(x509), 1);
 	X509_gmtime_adj(X509_get_notBefore(x509), 0);
 	X509_gmtime_adj(X509_get_notAfter(x509), 31536000L); //This is one year validity period of the cert
-	X509_set_pubkey(x509, pkey);
+
+	if(isCA)
+		X509_set_pubkey(x509, PrivateKey);
+	else
+		X509_set_pubkey(x509, CAKey);
+
 	X509_NAME* name = X509_get_subject_name(x509);
 	X509_NAME_add_entry_by_txt(name, "C", MBSTRING_ASC, (const unsigned char*)"NO", -1, -1, 0);
 	X509_NAME_add_entry_by_txt(name, "O", MBSTRING_ASC, (const unsigned char*)"CryptOrg", -1, -1, 0);
@@ -105,83 +112,93 @@ int CertHandler::createCert(EVP_PKEY* pkey, X509* cert)
 	X509_EXTENSION* ext;
 	X509V3_CTX ctx; // Create an X509V3 context for extensions
 
-	X509_set_issuer_name(x509, X509_get_subject_name(CACert));
+	if (isCA)
+		X509_set_issuer_name(x509, name);
+	else 
+		X509_set_issuer_name(x509, X509_get_subject_name(CACert));
 
 	X509V3_set_ctx_nodb(&ctx);
-	X509V3_set_ctx(&ctx, CACert, x509, NULL, NULL, 0);
+	if(isCA)
+		X509V3_set_ctx(&ctx, x509, x509, NULL, NULL, 0);
+	else
+		X509V3_set_ctx(&ctx, CACert, x509, NULL, NULL, 0);
 
-	// Example SAN string: "DNS:example.com,IP:192.168.0.1"
-	std::string sanField = "subjectAltName=" + clientIPAdds;
+	if (!isCA) {
+		// Example SAN string: "DNS:example.com, IP:192.168.0.1"
+		std::string sanField = "subjectAltName=" + clientIPAdds;
 
-	// Create and add SAN extension
-	ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_subject_alt_name, sanField.c_str());
-	if (!ext) {
-		X509_free(x509);
-		return -1; // Failed to create SAN extension
+		// Create and add SAN extension
+		ext = X509V3_EXT_conf_nid(NULL, &ctx, NID_subject_alt_name, sanField.c_str());
+		if (!ext) {
+			X509_free(x509);
+			return NULL; // Failed to create SAN extension
+		}
+		X509_add_ext(x509, ext, -1);
+		X509_EXTENSION_free(ext); // Free the extension object once added to cert
 	}
-	X509_add_ext(x509, ext, -1);
-	X509_EXTENSION_free(ext); // Free the extension object once added to cert
 
 	if (!X509_sign(x509, CAKey, EVP_sha256())) {
 		X509_free(x509);
-		return -1; // Failed to sign certificate
+		return NULL; // Failed to sign certificate
 	}
-	cert = x509;
-	X509_free(x509);
-	return 0;
+
+	return x509;
 }
 
-//Takes a reference to a EVP_PKEY and fills it with a new rsa key
-int CertHandler::createKey(EVP_PKEY* pkey) {
+EVP_PKEY* CertHandler::createKey() {
 
 	EVP_PKEY_CTX* ctx = NULL;
-	pkey = NULL;
+	EVP_PKEY* pkey = NULL;
 
-	// Create context for key generation
 	ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, NULL);
 	if (!ctx) {
 		printf("Failed to create EVP_PKEY_CTX\n");
 		return NULL;
 	}
 
-	// Initialize the context for key generation
 	if (EVP_PKEY_keygen_init(ctx) <= 0) {
 		printf("Failed to initialize keygen context\n");
-		EVP_PKEY_CTX_free(ctx); // Clean up context
+		EVP_PKEY_CTX_free(ctx);
 		return NULL;
 	}
 
-	// Set the key length (2048-bit RSA)
 	if (EVP_PKEY_CTX_set_rsa_keygen_bits(ctx, 2048) <= 0) {
 		printf("Failed to set RSA key length\n");
 		EVP_PKEY_CTX_free(ctx);
 		return NULL;
 	}
 
-	// Generate the key
 	if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
 		printf("Failed to generate RSA key\n");
+
+		ERR_print_errors_fp(stderr);
+
 		EVP_PKEY_CTX_free(ctx);
 		return NULL;
 	}
 
-	// Clean up context
 	EVP_PKEY_CTX_free(ctx);
-	return 0;
+
+	return pkey;
 }
+
+
+
 
 int CertHandler::handleConnection()
 {
 	int iRead = 0;
 	char addressBuffer[64];
 	UINT peerPort = 0;
+	//Get the IP of the connected pper, so that we know who to create the cert for
 	h_socket->GetPeerName(addressBuffer, sizeof(addressBuffer) / sizeof(TCHAR), peerPort);
 	//The format should be: IP Address xx.x.x.xx, IP Address:127.0.0.1
 	//Maybe add support for more IPs?
-	clientIPAdds = "IP Address:" + std::string(addressBuffer) + ", IP Address:127.0.0.1";
+	clientIPAdds = "IP:" + std::string(addressBuffer) + ", IP:127.0.0.1";
+	std::cout << "balle " << clientIPAdds << std::endl;
 	//First we fill the slot PrivateKey in the class with a new RSA key
-	createKey(PrivateKey);
-	createCert(PrivateKey, ServerCert);
+	PrivateKey = createKey();
+	ServerCert = createCert(false);
 	writeToPKCS12(PrivateKey, ServerCert, "collection.pfx");
 	FILE* pfxFile = fopen("collection.pfx", "rb");
 	//Figure out file size

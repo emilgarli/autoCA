@@ -1,7 +1,6 @@
 #pragma once
 #include "Rawsocket.h"
-#include "openssl/evp.h"
-#include "openssl/rsa.h"
+
 #include "openssl/x509.h"
 #include <openssl/bio.h>
 #include <openssl/pem.h>
@@ -16,8 +15,8 @@ public:
 	CertHandler(CWizReadWriteSocket* socket);
 	int openPKCS12(const char* fileName);
 	int writeToPKCS12(EVP_PKEY* privateKey, X509* certificate, const char* fileName = "CAFiles.pfx");
-	int createCert(EVP_PKEY* pkey, X509* cert);
-	int createKey(EVP_PKEY* pkey);
+	X509* createCert(bool isCA);
+	EVP_PKEY* createKey();
 	int handleConnection();
 private:
 	CWizReadWriteSocket* h_socket = nullptr;
